@@ -1,0 +1,6 @@
+# Eval gates enforced by .github/workflows/eval.yml on the smoke suite.
+# A run below any threshold fails the CI job.
+citation_support: 0.85
+recall_at_k: 0.80
+refusal_correctness: 1.00
+answer_correctness: 0.70

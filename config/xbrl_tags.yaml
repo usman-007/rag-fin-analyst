@@ -1,0 +1,25 @@
+# Candidate us-gaap tags per concept, tried in order against
+# https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json
+# Tags are not consistent across filers (e.g. bank holding companies rarely tag
+# "Revenues"), so each concept lists several candidates — the first that resolves
+# for a given company/fiscal-year wins. See edgar/xbrl.py.
+concepts:
+  revenue:
+    - RevenueFromContractWithCustomerExcludingAssessedTax
+    - RevenueFromContractWithCustomerIncludingAssessedTax
+    - Revenues
+    - SalesRevenueNet
+  net_income:
+    - NetIncomeLoss
+    - ProfitLoss
+    - NetIncomeLossAvailableToCommonStockholdersBasic
+  operating_income:
+    - OperatingIncomeLoss
+  total_assets:
+    - Assets
+  cash_and_equivalents:
+    - CashAndCashEquivalentsAtCarryingValue
+    - CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents
+  rd_expense:
+    - ResearchAndDevelopmentExpense
+    - ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost

@@ -1,0 +1,33 @@
+# Fixed corpus for the Multi-Hop Filings Analyst.
+# Each company's two most recent 10-K filings (by filing date) covering the listed
+# fiscal years are resolved at ingest time from SEC EDGAR's submissions API — the
+# accession numbers themselves are not hardcoded here because they change every year.
+companies:
+  - ticker: AAPL
+    cik: "0000320193"
+    name: "Apple Inc."
+    fiscal_years: [2023, 2024]
+  - ticker: MSFT
+    cik: "0000789019"
+    name: "Microsoft Corporation"
+    fiscal_years: [2023, 2024]
+  - ticker: NVDA
+    cik: "0001045810"
+    name: "NVIDIA Corporation"
+    fiscal_years: [2023, 2024]
+  - ticker: JPM
+    cik: "0000019617"
+    name: "JPMorgan Chase & Co."
+    fiscal_years: [2023, 2024]
+
+# Only these Items are ingested — see README "Design decisions" for the rationale
+# (embedding budget + retrieval precision vs. ingesting the full 10-K).
+sections:
+  - item: "1A"
+    title: "Risk Factors"
+  - item: "7"
+    title: "Management's Discussion and Analysis of Financial Condition and Results of Operations"
+  - item: "7A"
+    title: "Quantitative and Qualitative Disclosures About Market Risk"
+
+form_type: "10-K"
