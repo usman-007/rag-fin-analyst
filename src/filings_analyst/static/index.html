@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multi-Hop Filings Analyst</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b6b6b;
+    --border: #dcdcdc;
+    --accent: #2f5fd6;
+    --accent-fg: #ffffff;
+    --code-bg: #f4f4f6;
+    --danger: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e8e8ea;
+      --muted: #9a9ba1;
+      --border: #33353b;
+      --accent: #7da2ff;
+      --accent-fg: #10131a;
+      --code-bg: #1d1f24;
+      --danger: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin: 0 0 28px; }
+  form { display: flex; gap: 8px; }
+  input[type="text"] {
+    flex: 1;
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  button {
+    font-size: 0.9rem;
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--fg);
+    border-color: var(--border);
+    padding: 6px 10px;
+    font-size: 0.85rem;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .examples { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .examples button {
+    background: transparent;
+    color: var(--muted);
+    border-color: var(--border);
+    font-size: 0.78rem;
+    padding: 5px 10px;
+  }
+  #result { margin-top: 28px; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .answer { white-space: pre-wrap; }
+  .cite-marker {
+    color: var(--accent);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85em;
+  }
+  .refused .answer { color: var(--danger); }
+  h2 { font-size: 0.95rem; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  ul.citelist { list-style: none; margin: 0; padding: 0; }
+  ul.citelist li {
+    border-top: 1px solid var(--border);
+    padding: 10px 0;
+    font-size: 0.88rem;
+  }
+  ul.citelist li:first-child { border-top: none; padding-top: 0; }
+  .snippet {
+    background: var(--code-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-top: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+  }
+  a { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 0.8rem; display: flex; gap: 16px; flex-wrap: wrap; }
+  .contradiction { border-top: 1px solid var(--border); padding: 10px 0; font-size: 0.88rem; }
+  .contradiction:first-child { border-top: none; padding-top: 0; }
+  .kind { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; }
+  .feedback { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .feedback span { font-size: 0.82rem; color: var(--muted); }
+  #status { color: var(--muted); font-size: 0.88rem; margin-top: 16px; }
+  #errors { color: var(--danger); font-size: 0.82rem; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Multi-Hop Filings Analyst</h1>
+  <p class="subtitle">Comparative questions over SEC 10-K filings, with span-level citations and XBRL-grounded numbers.</p>
+
+  <form id="ask-form">
+    <input type="text" id="question" placeholder="e.g. Compare Apple's and Microsoft's FY2024 revenue" autocomplete="off" />
+    <button type="submit" id="ask-btn">Ask</button>
+  </form>
+  <div class="examples">
+    <button type="button" data-q="Compare Apple's and Microsoft's FY2024 revenue, and say whether either flagged FX as a material risk.">Compare AAPL/MSFT revenue</button>
+    <button type="button" data-q="How did NVIDIA's stated supply-chain risk language change between FY2023 and FY2024?">NVDA risk language YoY</button>
+    <button type="button" data-q="What was Tesla's FY2024 free cash flow?">Out-of-corpus (should refuse)</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="result"></div>
+</div>
+
+<script>
+const form = document.getElementById('ask-form');
+const input = document.getElementById('question');
+const askBtn = document.getElementById('ask-btn');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+let currentRunId = null;
+
+document.querySelectorAll('.examples button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    input.value = btn.dataset.q;
+    form.requestSubmit();
+  });
+});
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function renderAnswer(answer, citations) {
+  const byMarker = {};
+  citations.forEach((c) => { byMarker[c.marker] = c; });
+  const escaped = escapeHtml(answer);
+  return escaped.replace(/\[C(\d+)\]/g, (full, n) => {
+    const marker = `[C${n}]`;
+    if (!byMarker[marker]) return full;
+    return `<span class="cite-marker" data-marker="${marker}">${full}</span>`;
+  });
+}
+
+function render(data) {
+  currentRunId = data.run_id;
+  const card = document.createElement('div');
+  card.className = 'card' + (data.refused ? ' refused' : '');
+
+  const answerDiv = document.createElement('div');
+  answerDiv.className = 'answer';
+  answerDiv.innerHTML = renderAnswer(data.answer, data.citations);
+  card.appendChild(answerDiv);
+  resultEl.appendChild(card);
+
+  if (data.citations && data.citations.length) {
+    const citeCard = document.createElement('div');
+    citeCard.className = 'card';
+    citeCard.innerHTML = '<h2>Citations</h2>';
+    const ul = document.createElement('ul');
+    ul.className = 'citelist';
+    data.citations.forEach((c) => {
+      const li = document.createElement('li');
+      const link = c.source_url
+        ? `<a href="${escapeHtml(c.source_url)}" target="_blank" rel="noopener">${escapeHtml(c.chunk_id)}</a>`
+        : escapeHtml(c.chunk_id);
+      li.innerHTML = `<strong>${escapeHtml(c.marker)}</strong> — ${link}` +
+        (c.text_snippet ? `<div class="snippet">${escapeHtml(c.text_snippet)}</div>` : '');
+      ul.appendChild(li);
+    });
+    citeCard.appendChild(ul);
+    resultEl.appendChild(citeCard);
+
+    document.querySelectorAll('.cite-marker').forEach((el) => {
+      el.addEventListener('click', () => {
+        const marker = el.dataset.marker;
+        const idx = data.citations.findIndex((c) => c.marker === marker);
+        const li = ul.children[idx];
+        if (li) li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+  }
+
+  if (data.contradictions && data.contradictions.length) {
+    const contraCard = document.createElement('div');
+    contraCard.className = 'card';
+    contraCard.innerHTML = '<h2>Contradictions found</h2>';
+    data.contradictions.forEach((c) => {
+      const div = document.createElement('div');
+      div.className = 'contradiction';
+      div.innerHTML = `<div class="kind">${escapeHtml(c.kind)}</div>${escapeHtml(c.description)}`;
+      contraCard.appendChild(div);
+    });
+    resultEl.appendChild(contraCard);
+  }
+
+  const metaCard = document.createElement('div');
+  metaCard.className = 'card';
+  const traceLink = data.trace_url
+    ? `<a href="${escapeHtml(data.trace_url)}" target="_blank" rel="noopener">LangSmith trace</a>`
+    : 'trace not sampled for this request';
+  metaCard.innerHTML = `
+    <div class="meta">
+      <span>${data.latency_ms.toFixed(0)} ms</span>
+      <span>${data.llm_calls} LLM call${data.llm_calls === 1 ? '' : 's'}</span>
+      <span>${traceLink}</span>
+    </div>
+    <div class="feedback">
+      <span>Was this answer helpful?</span>
+      <button type="button" class="secondary" id="thumb-up">👍</button>
+      <button type="button" class="secondary" id="thumb-down">👎</button>
+      <span id="feedback-status"></span>
+    </div>
+  `;
+  resultEl.appendChild(metaCard);
+
+  if (data.errors && data.errors.length) {
+    const errDiv = document.createElement('div');
+    errDiv.id = 'errors';
+    errDiv.textContent = data.errors.join(' ');
+    resultEl.appendChild(errDiv);
+  }
+
+  const fbStatus = metaCard.querySelector('#feedback-status');
+  const sendFeedback = async (score) => {
+    if (!currentRunId) {
+      fbStatus.textContent = 'no run to attach feedback to';
+      return;
+    }
+    fbStatus.textContent = 'sending…';
+    try {
+      const resp = await fetch('/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: currentRunId, score }),
+      });
+      fbStatus.textContent = resp.ok ? 'thanks!' : 'failed to record';
+    } catch {
+      fbStatus.textContent = 'failed to record';
+    }
+  };
+  metaCard.querySelector('#thumb-up').addEventListener('click', () => sendFeedback(1));
+  metaCard.querySelector('#thumb-down').addEventListener('click', () => sendFeedback(0));
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const question = input.value.trim();
+  if (!question) return;
+
+  askBtn.disabled = true;
+  statusEl.textContent = 'Thinking… this can take up to a minute (multiple retrieval hops + LLM calls).';
+  resultEl.innerHTML = '';
+
+  try {
+    const resp = await fetch('/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${detail}`);
+    }
+    const data = await resp.json();
+    statusEl.textContent = '';
+    render(data);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+  } finally {
+    askBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

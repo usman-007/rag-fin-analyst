@@ -51,6 +51,11 @@ class FilingsStore:
             self._index_cache = self._pc.Index(name=self._settings.pinecone_index)
         return self._index_cache
 
+    def describe_index_stats(self) -> dict[str, Any]:
+        """Used by `/readyz` to confirm the index exists and actually has vectors in it."""
+        stats = self._index().describe_index_stats()
+        return stats.to_dict()  # type: ignore[no-any-return]
+
     def upsert_records(self, records: list[dict[str, Any]]) -> int:
         index = self._index()
         total = 0

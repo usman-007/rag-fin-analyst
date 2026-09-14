@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, cast
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -27,6 +28,7 @@ from langgraph.graph.state import CompiledStateGraph
 from filings_analyst.agent import nodes
 from filings_analyst.agent.state import AgentState
 from filings_analyst.obs.logging import get_logger
+from filings_analyst.obs.tracing import make_traced_ask
 from filings_analyst.settings import get_settings
 
 logger = get_logger(__name__)
@@ -106,17 +108,39 @@ def initial_state(question: str, thread_id: str) -> AgentState:
     )
 
 
-def ask(question: str, thread_id: str | None = None) -> dict[str, Any]:
+class _LLMCallCounter(BaseCallbackHandler):
+    """Counts LLM invocations for one graph run — `llm_calls` in the API response and the
+    quota-arithmetic table in the README both come from this, not an estimate."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
+        self.count += 1
+
+    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
+        self.count += 1
+
+
+def _ask_impl(question: str, thread_id: str | None = None) -> dict[str, Any]:
     thread_id = thread_id or str(uuid.uuid4())
+    counter = _LLMCallCounter()
     with sqlite_checkpointer() as checkpointer:
         graph = compile_graph(checkpointer)
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},
             "max_concurrency": 3,
+            "callbacks": [counter],
+            "run_name": "filings_analyst.ask",
         }
         logger.info("graph.ask", thread_id=thread_id)
         result: dict[str, Any] = graph.invoke(initial_state(question, thread_id), config=config)
+    result["llm_calls"] = counter.count
     return result
+
+
+# @traceable so `obs.tracing.current_run_id/current_trace_url` resolve inside `traced_ask()`.
+ask = make_traced_ask(_ask_impl)
 
 
 def _cli() -> None:
