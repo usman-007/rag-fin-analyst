@@ -1,0 +1,46 @@
+name: Eval
+
+on:
+  pull_request:
+
+jobs:
+  smoke-eval:
+    runs-on: ubuntu-latest
+    # Skip cleanly (not fail) on forks and clones without the eval secrets configured —
+    # this job should never be the reason a fresh clone's CI is red.
+    if: >-
+      ${{
+        secrets.LANGSMITH_API_KEY != '' &&
+        secrets.GOOGLE_API_KEY != '' &&
+        secrets.GROQ_API_KEY != '' &&
+        secrets.PINECONE_API_KEY != '' &&
+        secrets.SEC_USER_AGENT != ''
+      }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run smoke eval
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          LANGSMITH_TRACING: "true"
+        run: uv run python evals/run_eval.py --suite smoke
+
+      - name: Write results to job summary
+        if: always()
+        run: |
+          for f in evals/results/*.md; do
+            [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          done

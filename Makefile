@@ -1,5 +1,7 @@
 .PHONY: preflight ingest run eval test lint typecheck fmt
 
+SUITE ?= smoke
+
 preflight:
 	uv run python scripts/preflight.py
 
