@@ -164,8 +164,16 @@ rather than assume: the SPEC's Pinecone usage sketch (`create_index_for_model`,
 SDK version that was initially pinned (5.4.2) — it was added in a later major version.
 The dependency was bumped to `pinecone>=10.0.0,<11` after confirming the actual method
 signatures against the installed package directly (see commit history), rather than
-assuming the spec's sketch still matched current docs. `GEMINI_MODEL`/`FAST_MODEL` IDs
-in the spec were current as of this build and were not substituted.
+assuming the spec's sketch still matched current docs.
+
+`FAST_MODEL` needed the same treatment once real keys were available: the spec's
+`llama-3.3-70b-versatile` has been removed from Groq's catalog entirely (a live
+`/models` call against the account's own key returns 404 for it, and it's absent from
+the model list). Replaced with `openai/gpt-oss-120b` after confirming live — rate
+limits (`8000 tokens/min` on this account, matching the other candidates) and
+tool-calling support (required for `with_structured_output`) — rather than assuming
+the spec's sketch was still current. `long_model`/`judge_model` (`gemini-2.5-flash`)
+were confirmed live and reachable, unchanged.
 
 ## Evaluation
 

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     sec_user_agent: str | None = None
 
     # ---- Models -------------------------------------------------------------
-    fast_model: str = "llama-3.3-70b-versatile"
+    fast_model: str = "openai/gpt-oss-120b"
     long_model: str = "gemini-2.5-flash"
     judge_model: str = "gemini-2.5-flash"
 
