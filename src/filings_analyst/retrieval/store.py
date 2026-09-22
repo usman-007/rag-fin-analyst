@@ -134,14 +134,7 @@ class FilingsStore:
         if filters:
             query["filter"] = filters
         response = index.search(namespace=settings.pinecone_namespace, query=query)
-        hits = response.result.hits if hasattr(response, "result") else response["result"]["hits"]
-        results = []
-        for hit in hits:
-            fields = hit["fields"] if isinstance(hit, dict) else hit.fields
-            record_id = hit["_id"] if isinstance(hit, dict) else hit._id
-            score = hit["_score"] if isinstance(hit, dict) else hit._score
-            results.append({"id": record_id, "score": score, **fields})
-        return results
+        return [{"id": hit.id, "score": hit.score, **hit.fields} for hit in response.result.hits]
 
 
 def _cli() -> None:

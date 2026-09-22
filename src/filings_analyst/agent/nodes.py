@@ -45,12 +45,22 @@ MIN_RELEVANT_EVIDENCE = 2
 MAX_SYNTH_ATTEMPTS = 2
 
 CITATION_MARKER_RE = re.compile(r"\[C(\d+)\]")
+MARKER_DIGITS_RE = re.compile(r"(\d+)")
 # The decimal group only matches when a digit actually follows the dot — otherwise a
 # number at the end of a sentence (e.g. "...$100.") would swallow the sentence's own
 # period into the match and then never equal the fact value "100" it should match.
 NUMBER_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?%?")
 YEAR_RE = re.compile(r"^(19|20)\d{2}$")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _normalize_marker(raw: str) -> str | None:
+    """The synthesis model is told to reuse its inline `[C1]` markers verbatim in the
+    `citations` field, but doesn't reliably do so (observed live: plain `C1`, bare `1`).
+    Extract the digits and re-canonicalize rather than requiring an exact string match
+    the model doesn't consistently produce."""
+    match = MARKER_DIGITS_RE.search(raw)
+    return f"[C{match.group(1)}]" if match else None
 
 
 def _numbers_in(text: str) -> set[str]:
@@ -104,7 +114,7 @@ def plan(state: AgentState) -> dict[str, Any]:
     prompt = build_plan_prompt(state["question"], scope)
     assert_short(prompt)
     result = structured_invoke(get_fast_llm(), PlanOutput, prompt)
-    sub_queries = result.sub_queries[:4] or [
+    sub_queries = (result.sub_queries or [])[:4] or [
         SubQuery(text=state["question"], tickers=scope.tickers, fiscal_years=scope.fiscal_years)
     ]
     logger.info("node.plan", n_sub_queries=len(sub_queries))
@@ -160,7 +170,7 @@ def grade(state: AgentState) -> dict[str, Any]:
     prompt = build_grade_prompt(state["question"], candidates)
     assert_short(prompt)
     result = structured_invoke(get_fast_llm(), GradeBatch, prompt)
-    grades_by_id = {g.chunk_id: g for g in result.grades}
+    grades_by_id = {g.chunk_id: g for g in result.grades or []}
     updated = [
         e.model_copy(update={"relevant": g.relevant, "reason": g.reason})
         for e in candidates
@@ -186,9 +196,16 @@ def refine(state: AgentState) -> dict[str, Any]:
     ]
     updated_plan = list(state["plan"])
     for i in thin_indices:
-        prompt = build_refine_prompt(updated_plan[i])
+        original = updated_plan[i]
+        prompt = build_refine_prompt(original)
         assert_short(prompt)
-        updated_plan[i] = structured_invoke(get_fast_llm(), SubQuery, prompt)
+        refined = structured_invoke(get_fast_llm(), SubQuery, prompt)
+        # build_refine_prompt only asks the model to adjust text/tickers/fiscal_years/items —
+        # needs_xbrl/xbrl_concept are out of scope for refine and must survive unchanged, not
+        # get silently defaulted away by a schema the model fills in from scratch each time.
+        updated_plan[i] = refined.model_copy(
+            update={"needs_xbrl": original.needs_xbrl, "xbrl_concept": original.xbrl_concept}
+        )
     logger.info("node.refine", thin_indices=thin_indices, hop=state["hop"] + 1)
     return {
         "plan": updated_plan,
@@ -217,7 +234,7 @@ def extract(state: AgentState) -> dict[str, Any]:
         return {"facts": list(state["xbrl_facts"])}
     prompt = build_extract_prompt(state["question"], relevant_evidence)
     result = structured_invoke(get_long_llm(), FactBatch, prompt)
-    facts = list(state["xbrl_facts"]) + result.facts
+    facts = list(state["xbrl_facts"]) + (result.facts or [])
     logger.info("node.extract", n_facts=len(facts))
     return {"facts": facts}
 
@@ -228,13 +245,15 @@ def compare(state: AgentState) -> dict[str, Any]:
         return {"contradictions": []}
     prompt = build_compare_prompt(state["question"], state["facts"], relevant_evidence)
     result = structured_invoke(get_long_llm(), CompareOutput, prompt)
-    facts = state["facts"] + result.additional_facts
+    additional_facts = result.additional_facts or []
+    contradictions = result.contradictions or []
+    facts = state["facts"] + additional_facts
     logger.info(
         "node.compare",
-        n_additional_facts=len(result.additional_facts),
-        n_contradictions=len(result.contradictions),
+        n_additional_facts=len(additional_facts),
+        n_contradictions=len(contradictions),
     )
-    return {"facts": facts, "contradictions": result.contradictions}
+    return {"facts": facts, "contradictions": contradictions}
 
 
 # ---- synthesize (long model) --------------------------------------------------------------
@@ -249,12 +268,11 @@ def synthesize(state: AgentState) -> dict[str, Any]:
     if state["violations"]:
         prompt = build_verify_repair_prompt(prompt, state["violations"])
     result = structured_invoke(get_long_llm(), SynthesisOutput, prompt)
-    logger.info(
-        "node.synthesize", n_citations=len(result.citations), attempt=state["synth_attempts"] + 1
-    )
+    citations = result.citations or []
+    logger.info("node.synthesize", n_citations=len(citations), attempt=state["synth_attempts"] + 1)
     return {
         "draft": result.answer,
-        "citations": result.citations,
+        "citations": citations,
         "synth_attempts": state["synth_attempts"] + 1,
     }
 
@@ -272,7 +290,7 @@ def _find_violations(
     violations: list[str] = []
 
     used_marker_strs = {f"[C{m}]" for m in CITATION_MARKER_RE.findall(draft)}
-    cited_marker_strs = {c.marker for c in citations}
+    cited_marker_strs = {m for c in citations if (m := _normalize_marker(c.marker)) is not None}
     missing = used_marker_strs - cited_marker_strs
     if missing:
         violations.append(
@@ -326,7 +344,11 @@ def verify(state: AgentState) -> dict[str, Any]:
 
     if violations and state["synth_attempts"] >= MAX_SYNTH_ATTEMPTS:
         valid_sources = evidence_ids | fact_sources
-        valid_markers = {c.marker for c in citations if c.chunk_id in valid_sources}
+        valid_markers = {
+            m
+            for c in citations
+            if c.chunk_id in valid_sources and (m := _normalize_marker(c.marker)) is not None
+        }
         cleaned, removed = _strip_unsupported_sentences(draft, fact_numbers, valid_markers)
         errors = list(state["errors"])
         if removed:
@@ -334,7 +356,13 @@ def verify(state: AgentState) -> dict[str, Any]:
                 f"Repair failed after {state['synth_attempts']} attempts; removed "
                 f"{len(removed)} unsupported sentence(s) from the answer: {removed}"
             )
-        kept_citations = [c for c in citations if c.marker in valid_markers and c.marker in cleaned]
+        kept_citations = [
+            c
+            for c in citations
+            if (m := _normalize_marker(c.marker)) is not None
+            and m in valid_markers
+            and m in cleaned
+        ]
         logger.warning("node.verify.stripped", n_removed=len(removed))
         return {"draft": cleaned, "citations": kept_citations, "violations": [], "errors": errors}
 
