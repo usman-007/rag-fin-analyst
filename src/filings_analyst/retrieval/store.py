@@ -8,16 +8,45 @@ namespacing by ticker would turn every comparative question into N queries plus 
 from __future__ import annotations
 
 import argparse
+import time
+from collections import deque
 from typing import Any
 
 from pinecone import IndexEmbed, Pinecone
+from pinecone.errors.exceptions import RateLimitError
+from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 
+from filings_analyst.ingest.chunker import count_tokens
 from filings_analyst.obs.logging import get_logger
 from filings_analyst.settings import get_settings
 
 logger = get_logger(__name__)
 
 UPSERT_BATCH_SIZE = 96
+
+# Pinecone's Starter-plan cap for llama-text-embed-v2 (passage) embedding is
+# 250,000 tokens/minute, confirmed live via a 429 during ingestion. Pace our own
+# requests under that, with headroom for the tiktoken-vs-actual-tokenizer mismatch.
+EMBED_TOKENS_PER_MINUTE_BUDGET = 180_000
+_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+def _rate_limit_wait(retry_state: RetryCallState) -> float:
+    """Wait as long as the server actually asked (`Retry-After`), not a guess."""
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, RateLimitError) and exc.retry_after is not None:
+        return float(exc.retry_after) + 1.0
+    return _RATE_LIMIT_WINDOW_SECONDS + 5.0
+
+
+@retry(
+    retry=retry_if_exception_type(RateLimitError),
+    stop=stop_after_attempt(3),
+    wait=_rate_limit_wait,
+    reraise=True,
+)
+def _upsert_batch(index: Any, namespace: str, batch: list[dict[str, Any]]) -> None:
+    index.upsert_records(namespace=namespace, records=batch)
 
 
 class FilingsStore:
@@ -28,6 +57,23 @@ class FilingsStore:
         self._settings = settings
         self._pc = Pinecone(api_key=settings.pinecone_api_key.get_secret_value())
         self._index_cache: Any = None
+        self._embed_window: deque[tuple[float, int]] = deque()
+
+    def _wait_for_embed_budget(self, tokens: int) -> None:
+        """Block until sending `tokens` more keeps the trailing 60s under budget."""
+        while True:
+            now = time.monotonic()
+            while (
+                self._embed_window and now - self._embed_window[0][0] > _RATE_LIMIT_WINDOW_SECONDS
+            ):
+                self._embed_window.popleft()
+            used = sum(t for _, t in self._embed_window)
+            if used + tokens <= EMBED_TOKENS_PER_MINUTE_BUDGET or not self._embed_window:
+                self._embed_window.append((now, tokens))
+                return
+            sleep_for = _RATE_LIMIT_WINDOW_SECONDS - (now - self._embed_window[0][0]) + 0.5
+            logger.info("pinecone.embed_budget_pause", sleep_seconds=round(sleep_for, 1), used=used)
+            time.sleep(max(sleep_for, 0.1))
 
     def ensure_index(self) -> None:
         settings = self._settings
@@ -61,9 +107,16 @@ class FilingsStore:
         total = 0
         for i in range(0, len(records), UPSERT_BATCH_SIZE):
             batch = records[i : i + UPSERT_BATCH_SIZE]
-            index.upsert_records(namespace=self._settings.pinecone_namespace, records=batch)
+            batch_tokens = sum(count_tokens(r.get("chunk_text", "")) for r in batch)
+            self._wait_for_embed_budget(batch_tokens)
+            _upsert_batch(index, self._settings.pinecone_namespace, batch)
             total += len(batch)
-            logger.info("pinecone.upsert_batch", batch_size=len(batch), total=total)
+            logger.info(
+                "pinecone.upsert_batch",
+                batch_size=len(batch),
+                batch_tokens=batch_tokens,
+                total=total,
+            )
         return total
 
     def search(
