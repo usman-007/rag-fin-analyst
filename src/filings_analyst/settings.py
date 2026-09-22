@@ -1,7 +1,16 @@
-"""Typed settings loaded from `.env`. Nothing in this codebase reads `os.environ` directly."""
+"""Typed settings loaded from `.env`. Nothing in this codebase reads `os.environ` directly.
+
+One deliberate exception: `get_settings()` exports the `LANGSMITH_*` values back into
+`os.environ`. The `langsmith` SDK reads those directly to drive its implicit
+LangGraph/LangChain tracing hooks (that's the whole point of `tracing_context()` in
+obs/tracing.py — no client needs wiring at every call site), and `uv run` does not
+export `.env` into the process environment on its own, so without this the tracing
+client runs with no credentials and every run submission is silently unauthenticated.
+"""
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -75,6 +84,16 @@ class Settings(BaseSettings):
         self.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _sync_langsmith_env(settings: Settings) -> None:
+    os.environ["LANGSMITH_TRACING"] = "true" if settings.langsmith_tracing else "false"
+    os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
+    os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    if settings.langsmith_api_key is not None:
+        os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key.get_secret_value()
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    _sync_langsmith_env(settings)
+    return settings

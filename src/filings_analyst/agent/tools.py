@@ -23,6 +23,12 @@ from filings_analyst.settings import get_settings
 logger = get_logger(__name__)
 
 
+def _format_xbrl_value(value: float) -> str:
+    """XBRL dollar amounts are always whole dollars; `str(391035000000.0)` renders a
+    spurious trailing `.0` that the synthesis model then echoes verbatim into the answer."""
+    return str(int(value)) if value.is_integer() else str(value)
+
+
 def search_filings(
     sub_query: SubQuery, store: FilingsStore, use_rerank: bool = True
 ) -> list[Evidence]:
@@ -79,7 +85,7 @@ def get_xbrl_fact(sub_query: SubQuery) -> list[Fact]:
 
     client = _edgar_client()
     facts: list[Fact] = []
-    for ticker in sub_query.tickers:
+    for ticker in sub_query.tickers or []:
         company = corpus.company_by_ticker(ticker)
         if company is None:
             continue
@@ -100,7 +106,7 @@ def get_xbrl_fact(sub_query: SubQuery) -> list[Fact]:
             facts.append(
                 Fact(
                     claim=f"{company.name} {sub_query.xbrl_concept} for FY{fy}",
-                    value=str(xbrl_fact.value),
+                    value=_format_xbrl_value(xbrl_fact.value),
                     unit=xbrl_fact.unit,
                     period=xbrl_fact.period_end,
                     source=f"xbrl:{xbrl_fact.tag}:{fy}",
